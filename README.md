@@ -12,7 +12,7 @@ fn main() {
 ```
 
 ## But how?
-Invoking [their API](https://launchermeta.mojang.com/mc/game/version_manifest.json) by crate named `reqwest` at compile time.
+Invoking [their API](https://launchermeta.mojang.com/mc/game/version_manifest.json) at compile time.
 
 ## License
 Licensed under either of Apache License, Version 2.0 or MIT license at your option.
