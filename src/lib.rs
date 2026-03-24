@@ -17,7 +17,7 @@ mod tests {
     }
 
     #[test]
-    fn eq_reflexibity() {
+    fn eq_reflexivity() {
         assert!(MinecraftVersion::_1_19_3 == MinecraftVersion::_1_19_3);
     }
 

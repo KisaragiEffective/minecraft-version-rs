@@ -15,7 +15,6 @@ readme = "README.md"
 [dependencies]
 
 [build-dependencies]
-chrono = { version = "0.4.23", features = ["serde"] }
-reqwest = { version = "0.11.14", features = ["json"] }
-serde = { version = "1.0.152", features = ["derive"] }
-tokio = { version = "1.24.2", features = ["rt", "rt-multi-thread", "macros"] }
+jiff = { version = "0.2.23", default-features = true, features = ["std", "alloc", "serde"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
