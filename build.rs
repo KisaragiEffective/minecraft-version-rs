@@ -1,8 +1,9 @@
+use jiff::civil::DateTime;
+use serde::Deserialize;
 use std::error::Error;
 use std::fs::File;
 use std::io::BufWriter;
-use chrono::Utc;
-use serde::Deserialize;
+use std::process::Stdio;
 
 #[derive(Deserialize)]
 struct VersionCollection {
@@ -13,75 +14,82 @@ struct VersionCollection {
 #[serde(rename_all = "camelCase")]
 struct Version {
     id: String,
-    release_time: chrono::DateTime<Utc>,
+    release_time: DateTime,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut col = reqwest::get("https://launchermeta.mojang.com/mc/game/version_manifest.json")
-        .await?
-        .json::<VersionCollection>()
-        .await?
-        .versions;
+fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    // hack: avoid large crate trees
+    let stdout = std::process::Command::new("curl")
+        .args([
+            "--compressed",
+            "--user-agent",
+            r#""minecraft-version-rs/build-script (+https://crates.io/crates/minecraft-version)""#,
+            "https://launchermeta.mojang.com/mc/game/version_manifest.json"
+        ])
+        .stdout(Stdio::piped())
+        .output()
+        .expect("curl is required to build this crate")
+        .stdout;
 
-    col.sort_by_key(|x| x.release_time);
+    let mut versions = serde_json::from_slice::<VersionCollection>(&stdout)?.versions;
 
-    let f = File::options().create(true).write(true).append(false).open("./src/gen.rs")?;
+    versions.sort_by_key(|x| x.release_time);
+
+    let f = File::options().create(true).write(true).append(false).truncate(true).open("./src/gen.rs")?;
     let mut bw = BufWriter::new(f);
     use std::io::Write;
 
-    writeln!(&mut bw, "#[non_exhaustive]")?;
-    writeln!(&mut bw, "#[allow(non_camel_case_types)]")?;
-    writeln!(&mut bw, "#[derive(Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]")?;
-    writeln!(&mut bw, "pub enum MinecraftVersion {{")?;
-    let make = |s: &String| s.replace(['.', '-', ' '], "_");
-    let s = col
+    let make_enum_name = |s: &str| format!("_{}", s.replace(['.', '-', ' '], "_"));
+    let variants = versions
         .iter()
         .map(|x|
-            format!("    _{v},\n", v = make(&x.id))
+            format!("    {v},\n", v = make_enum_name(&x.id))
         )
         .collect::<Vec<_>>()
         .join("");
-    write!(&mut bw, "{}", s)?;
-    writeln!(&mut bw, "}}")?;
 
-    writeln!(&mut bw)?;
-
-    writeln!(&mut bw, "impl core::fmt::Display for MinecraftVersion {{")?;
-    writeln!(&mut bw, "    #[allow(clippy::too_many_lines)]")?;
-    writeln!(&mut bw, "    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {{")?;
-    writeln!(&mut bw, "        let s = match self {{")?;
-    let s = col
+    let display_arms = versions
         .iter()
-        .map(|x| format!("            Self::_{case} => \"{value}\", \n", case = make(&x.id), value = &x.id))
-        .collect::<Vec<_>>()
-        .join("");
-    write!(&mut bw, "{}", s)?;
-    writeln!(&mut bw, "        }};")?;
-    writeln!(&mut bw, "    ")?;
-    writeln!(&mut bw, "    f.write_str(s)")?;
-    writeln!(&mut bw, "    }}")?;
-    writeln!(&mut bw, "}}")?;
-
-    writeln!(&mut bw)?;
-
-    writeln!(&mut bw, "impl core::str::FromStr for MinecraftVersion {{")?;
-    writeln!(&mut bw, "    type Err = ();")?;
-    writeln!(&mut bw, "    #[allow(clippy::too_many_lines)]")?;
-    writeln!(&mut bw, "    fn from_str(s: &str) -> Result<Self, Self::Err> {{")?;
-    writeln!(&mut bw, "        match s {{")?;
-
-    let s = col
-        .iter()
-        .map(|x| format!("            \"{ver}\" => Ok(Self::_{variant}),\n", ver = &x.id, variant = make(&x.id)))
+        .map(|x| format!("            Self::{name} => \"{value}\", \n", name = make_enum_name(&x.id), value = &x.id))
         .collect::<Vec<_>>()
         .join("");
 
-    write!(&mut bw, "{}", s)?;
-    write!(&mut bw, "            _ => Err(()),")?;
-    writeln!(&mut bw, "        }}")?;
-    writeln!(&mut bw, "    }}")?;
-    writeln!(&mut bw, "}}")?;
+    let from_str_arms = versions
+        .iter()
+        .map(|x| format!("            \"{ver}\" => Ok(Self::{variant}),\n", ver = &x.id, variant = make_enum_name(&x.id)))
+        .collect::<Vec<_>>()
+        .join("");
+
+    // language=rust
+    writeln!(&mut bw, r#"#![allow(unused_qualifications, clippy::too_many_lines)]
+
+#[non_exhaustive]
+#[allow(non_camel_case_types)]
+#[derive(Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
+pub enum MinecraftVersion {{
+{variants}
+}}
+
+impl ::core::fmt::Display for MinecraftVersion {{
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {{
+        let s = match self {{
+{display_arms}
+        }};
+
+        f.write_str(s)
+    }}
+}}
+
+impl ::core::str::FromStr for MinecraftVersion {{
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {{
+        match s {{
+{from_str_arms}
+            _ => ::core::result::Result::Err(())
+        }}
+    }}
+}}"#)?;
 
     Ok(())
 }
