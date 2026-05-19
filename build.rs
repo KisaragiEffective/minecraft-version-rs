@@ -1,13 +1,15 @@
 use jiff::civil::DateTime;
+use quote::quote;
 use serde::Deserialize;
 use std::error::Error;
 use std::fs::File;
 use std::io::BufWriter;
+use std::io::Write;
 use std::process::Stdio;
 
 #[derive(Deserialize)]
 struct VersionCollection {
-    versions: Vec<Version>
+    versions: Vec<Version>,
 }
 
 #[derive(Deserialize)]
@@ -28,7 +30,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             "--location",
             "--user-agent",
             r#""minecraft-version-rs/build-script (+https://crates.io/crates/minecraft-version)""#,
-            "https://launchermeta.mojang.com/mc/game/version_manifest.json"
+            "https://launchermeta.mojang.com/mc/game/version_manifest.json",
         ])
         .stdout(Stdio::piped())
         .output()
@@ -45,65 +47,81 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     versions.sort_by_key(|x| x.release_time);
 
+    let variants = versions
+        .iter()
+        .map(|version| {
+            let mut id = version.id.replace(['.', '-', ' '], "_");
+            id.insert(0, '_');
+            let id: proc_macro2::TokenStream = id.parse().unwrap();
+            quote! {#id}
+        })
+        .collect::<Vec<_>>();
+
+    let version_strings = versions
+        .iter()
+        .map(|version| {
+            let mut id = version.id.replace(['.', '-', ' '], "_");
+            id.insert(0, '_');
+            let id: proc_macro2::TokenStream = id.parse().unwrap();
+            let id2 = version.id.clone();
+            quote! {Self::#id => #id2}
+        })
+        .collect::<Vec<_>>();
+
+    let strings_versions = versions
+        .iter()
+        .map(|version| {
+            let mut id = version.id.replace(['.', '-', ' '], "_");
+            id.insert(0, '_');
+            let id: proc_macro2::TokenStream = id.parse().unwrap();
+            let id2 = version.id.clone();
+            quote! {#id2=>  Ok(Self::#id)}
+        })
+        .collect::<Vec<_>>();
+
+    let tokens = quote! {
+        #[non_exhaustive]
+        #[allow(non_camel_case_types)]
+        #[derive(Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
+        pub enum MinecraftVersion {
+            #(#variants),*
+        }
+
+        impl core::fmt::Display for MinecraftVersion {
+            #[allow(clippy::too_many_lines)]
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                let s = match self {
+                    #(#version_strings),*
+                };
+                f.write_str(s)
+            }
+        }
+        impl core::str::FromStr for MinecraftVersion {
+            type Err = ();
+            #[allow(clippy::too_many_lines)]
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s {
+                    #(#strings_versions),*,
+                    _ => Err(())
+                }
+            }
+        }
+    };
+
     // avoid dirty tree
     let out_dir = std::env::var("OUT_DIR")?;
     let dest_path = std::path::Path::new(&out_dir).join("gen.rs");
-    let f = File::options().create(true).write(true).append(false).truncate(true).open(&dest_path)?;
 
+    let syntax_tree = syn::parse2(tokens)?;
+    let f = File::options()
+        .create(true)
+        .write(true)
+        .append(false)
+        .truncate(true)
+        .open(dest_path)?;
     let mut bw = BufWriter::new(f);
-    use std::io::Write;
+    write!(&mut bw, "{}", prettyplease::unparse(&syntax_tree))?;
 
-    let make_enum_name = |s: &str| format!("_{}", s.replace(['.', '-', ' '], "_"));
-    let variants = versions
-        .iter()
-        .map(|x|
-            format!("    {v},\n", v = make_enum_name(&x.id))
-        )
-        .collect::<Vec<_>>()
-        .join("");
-
-    let display_arms = versions
-        .iter()
-        .map(|x| format!("            Self::{name} => \"{value}\", \n", name = make_enum_name(&x.id), value = &x.id))
-        .collect::<Vec<_>>()
-        .join("");
-
-    let from_str_arms = versions
-        .iter()
-        .map(|x| format!("            \"{ver}\" => Ok(Self::{variant}),\n", ver = &x.id, variant = make_enum_name(&x.id)))
-        .collect::<Vec<_>>()
-        .join("");
-
-    // language=rust
-    writeln!(&mut bw, r#"#[non_exhaustive]
-#[allow(non_camel_case_types)]
-#[derive(Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
-pub enum MinecraftVersion {{
-{variants}
-}}
-
-#[allow(unused_qualifications, clippy::too_many_lines)]
-impl ::core::fmt::Display for MinecraftVersion {{
-    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {{
-        let s = match self {{
-{display_arms}
-        }};
-
-        f.write_str(s)
-    }}
-}}
-
-#[allow(unused_qualifications, clippy::too_many_lines)]
-impl ::core::str::FromStr for MinecraftVersion {{
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {{
-        match s {{
-{from_str_arms}
-            _ => ::core::result::Result::Err(())
-        }}
-    }}
-}}"#)?;
-
+    println!("cargo::rerun-if-changed=build.rs");
     Ok(())
 }

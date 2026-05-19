@@ -8,8 +8,8 @@ pub use gen::MinecraftVersion;
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn ord_is_release_order() {
