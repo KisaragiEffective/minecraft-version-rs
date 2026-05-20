@@ -2,9 +2,6 @@ use jiff::civil::DateTime;
 use quote::quote;
 use serde::Deserialize;
 use std::error::Error;
-use std::fs::File;
-use std::io::BufWriter;
-use std::io::Write;
 use std::process::Stdio;
 
 #[derive(Deserialize)]
@@ -43,41 +40,38 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let stdout = output.stdout;
 
-    let mut versions = serde_json::from_slice::<VersionCollection>(&stdout)?.versions;
+    let mut raw_versions = serde_json::from_slice::<VersionCollection>(&stdout)?.versions;
 
-    versions.sort_by_key(|x| x.release_time);
+    raw_versions.sort_by_key(|x| x.release_time);
 
-    let variants = versions
-        .iter()
-        .map(|version| {
-            let mut id = version.id.replace(['.', '-', ' '], "_");
-            id.insert(0, '_');
-            let id: proc_macro2::TokenStream = id.parse().unwrap();
-            quote! {#id}
+    let variants = raw_versions.iter()
+        .map(|v| {
+            let mut mangled_version = v.id.replace(['.', '-', ' '], "_");
+            mangled_version.insert(0, '_');
+
+            proc_macro2::Ident::new(&mangled_version, proc_macro2::Span::call_site())
         })
         .collect::<Vec<_>>();
 
-    let version_strings = versions
+    // `quote!`-ed tokens does not have to be collected into Vec: the macro accepts any `Iterator`.
+    let version_strings = variants
         .iter()
-        .map(|version| {
-            let mut id = version.id.replace(['.', '-', ' '], "_");
-            id.insert(0, '_');
-            let id: proc_macro2::TokenStream = id.parse().unwrap();
-            let id2 = version.id.clone();
-            quote! {Self::#id => #id2}
-        })
-        .collect::<Vec<_>>();
+        .enumerate()
+        .map(|(i, version)| {
+            let s = &raw_versions[i].id;
 
-    let strings_versions = versions
+            quote! {Self::#version => #s}
+        });
+
+    let strings_versions = variants
         .iter()
-        .map(|version| {
-            let mut id = version.id.replace(['.', '-', ' '], "_");
-            id.insert(0, '_');
-            let id: proc_macro2::TokenStream = id.parse().unwrap();
-            let id2 = version.id.clone();
-            quote! {#id2=>  Ok(Self::#id)}
-        })
-        .collect::<Vec<_>>();
+        .enumerate()
+        .map(|(i, version)| {
+            let s = &raw_versions[i].id;
+
+            quote! {#s => Ok(Self::#version)}
+        });
+
 
     let tokens = quote! {
         #[non_exhaustive]
@@ -113,14 +107,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let dest_path = std::path::Path::new(&out_dir).join("gen.rs");
 
     let syntax_tree = syn::parse2(tokens)?;
-    let f = File::options()
-        .create(true)
-        .write(true)
-        .append(false)
-        .truncate(true)
-        .open(dest_path)?;
-    let mut bw = BufWriter::new(f);
-    write!(&mut bw, "{}", prettyplease::unparse(&syntax_tree))?;
+    std::fs::write(dest_path, prettyplease::unparse(&syntax_tree))?;
 
     println!("cargo::rerun-if-changed=build.rs");
     Ok(())
