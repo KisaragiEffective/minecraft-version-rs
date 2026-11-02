@@ -1,6 +1,6 @@
 [package]
 name = "minecraft-version"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Exhaustive enum of Minecraft versions"
 license = "Apache-2.0 OR MIT"
@@ -12,10 +12,12 @@ readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[dependencies]
 
 [build-dependencies]
-chrono = { version = "0.4.23", features = ["serde"] }
-reqwest = { version = "0.11.14", features = ["json"] }
-serde = { version = "1.0.152", features = ["derive"] }
-tokio = { version = "1.24.2", features = ["rt", "rt-multi-thread", "macros"] }
+jiff = { version = "0.2.23", default-features = true, features = ["std", "alloc", "serde"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+quote = "1.0.36"
+prettyplease = "0.2"
+syn = "2.0.75"
+proc-macro2 = "1.0.86"

@@ -8,8 +8,8 @@ pub use gen::MinecraftVersion;
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn ord_is_release_order() {
@@ -17,7 +17,7 @@ mod tests {
     }
 
     #[test]
-    fn eq_reflexibity() {
+    fn eq_reflexivity() {
         assert!(MinecraftVersion::_1_19_3 == MinecraftVersion::_1_19_3);
     }
 

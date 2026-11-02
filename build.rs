@@ -1,87 +1,114 @@
-use std::error::Error;
-use std::fs::File;
-use std::io::BufWriter;
-use chrono::Utc;
+use jiff::civil::DateTime;
+use quote::quote;
 use serde::Deserialize;
+use std::error::Error;
+use std::process::Stdio;
 
 #[derive(Deserialize)]
 struct VersionCollection {
-    versions: Vec<Version>
+    versions: Vec<Version>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Version {
     id: String,
-    release_time: chrono::DateTime<Utc>,
+    release_time: DateTime,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut col = reqwest::get("https://launchermeta.mojang.com/mc/game/version_manifest.json")
-        .await?
-        .json::<VersionCollection>()
-        .await?
-        .versions;
+fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    // hack: avoid large crate trees (bloating by rustls - reducing about 250MB).
+    // Even if on Windows, 1804 and later includes `curl` on $PATH-searchable directory.
+    // CreateProcessW adds the `.exe` suffix, so `curl` program can be justified in most environments.
+    let output = std::process::Command::new("curl")
+        .args([
+            "--compressed",
+            "--fail",
+            "--location",
+            "--user-agent",
+            r#""minecraft-version-rs/build-script (+https://crates.io/crates/minecraft-version)""#,
+            "https://launchermeta.mojang.com/mc/game/version_manifest.json",
+        ])
+        .stdout(Stdio::piped())
+        .output()
+        .expect("curl is required to build this crate");
 
-    col.sort_by_key(|x| x.release_time);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("curl failed to fetch version manifest: {stderr}").into());
+    }
 
-    let f = File::options().create(true).write(true).append(false).open("./src/gen.rs")?;
-    let mut bw = BufWriter::new(f);
-    use std::io::Write;
+    let stdout = output.stdout;
 
-    writeln!(&mut bw, "#[non_exhaustive]")?;
-    writeln!(&mut bw, "#[allow(non_camel_case_types)]")?;
-    writeln!(&mut bw, "#[derive(Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]")?;
-    writeln!(&mut bw, "pub enum MinecraftVersion {{")?;
-    let make = |s: &String| s.replace(['.', '-', ' '], "_");
-    let s = col
+    let mut raw_versions = serde_json::from_slice::<VersionCollection>(&stdout)?.versions;
+
+    raw_versions.sort_by_key(|x| x.release_time);
+
+    let variants = raw_versions.iter()
+        .map(|v| {
+            let mut mangled_version = v.id.replace(['.', '-', ' '], "_");
+            mangled_version.insert(0, '_');
+
+            proc_macro2::Ident::new(&mangled_version, proc_macro2::Span::call_site())
+        })
+        .collect::<Vec<_>>();
+
+    // `quote!`-ed tokens does not have to be collected into Vec: the macro accepts any `Iterator`.
+    let version_strings = variants
         .iter()
-        .map(|x|
-            format!("    _{v},\n", v = make(&x.id))
-        )
-        .collect::<Vec<_>>()
-        .join("");
-    write!(&mut bw, "{}", s)?;
-    writeln!(&mut bw, "}}")?;
+        .enumerate()
+        .map(|(i, version)| {
+            let s = &raw_versions[i].id;
 
-    writeln!(&mut bw)?;
+            quote! {Self::#version => #s}
+        });
 
-    writeln!(&mut bw, "impl core::fmt::Display for MinecraftVersion {{")?;
-    writeln!(&mut bw, "    #[allow(clippy::too_many_lines)]")?;
-    writeln!(&mut bw, "    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {{")?;
-    writeln!(&mut bw, "        let s = match self {{")?;
-    let s = col
+    let strings_versions = variants
         .iter()
-        .map(|x| format!("            Self::_{case} => \"{value}\", \n", case = make(&x.id), value = &x.id))
-        .collect::<Vec<_>>()
-        .join("");
-    write!(&mut bw, "{}", s)?;
-    writeln!(&mut bw, "        }};")?;
-    writeln!(&mut bw, "    ")?;
-    writeln!(&mut bw, "    f.write_str(s)")?;
-    writeln!(&mut bw, "    }}")?;
-    writeln!(&mut bw, "}}")?;
+        .enumerate()
+        .map(|(i, version)| {
+            let s = &raw_versions[i].id;
 
-    writeln!(&mut bw)?;
+            quote! {#s => Ok(Self::#version)}
+        });
 
-    writeln!(&mut bw, "impl core::str::FromStr for MinecraftVersion {{")?;
-    writeln!(&mut bw, "    type Err = ();")?;
-    writeln!(&mut bw, "    #[allow(clippy::too_many_lines)]")?;
-    writeln!(&mut bw, "    fn from_str(s: &str) -> Result<Self, Self::Err> {{")?;
-    writeln!(&mut bw, "        match s {{")?;
 
-    let s = col
-        .iter()
-        .map(|x| format!("            \"{ver}\" => Ok(Self::_{variant}),\n", ver = &x.id, variant = make(&x.id)))
-        .collect::<Vec<_>>()
-        .join("");
+    let tokens = quote! {
+        #[non_exhaustive]
+        #[allow(non_camel_case_types)]
+        #[derive(Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
+        pub enum MinecraftVersion {
+            #(#variants),*
+        }
 
-    write!(&mut bw, "{}", s)?;
-    write!(&mut bw, "            _ => Err(()),")?;
-    writeln!(&mut bw, "        }}")?;
-    writeln!(&mut bw, "    }}")?;
-    writeln!(&mut bw, "}}")?;
+        impl core::fmt::Display for MinecraftVersion {
+            #[allow(clippy::too_many_lines)]
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                let s = match self {
+                    #(#version_strings),*
+                };
+                f.write_str(s)
+            }
+        }
+        impl core::str::FromStr for MinecraftVersion {
+            type Err = ();
+            #[allow(clippy::too_many_lines)]
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s {
+                    #(#strings_versions),*,
+                    _ => Err(())
+                }
+            }
+        }
+    };
 
+    // avoid dirty tree
+    let out_dir = std::env::var("OUT_DIR")?;
+    let dest_path = std::path::Path::new(&out_dir).join("gen.rs");
+
+    let syntax_tree = syn::parse2(tokens)?;
+    std::fs::write(dest_path, prettyplease::unparse(&syntax_tree))?;
+
+    println!("cargo::rerun-if-changed=build.rs");
     Ok(())
 }
